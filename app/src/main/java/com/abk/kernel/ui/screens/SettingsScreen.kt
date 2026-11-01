@@ -15,8 +15,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -49,7 +51,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.ColorUtils
 import coil.compose.AsyncImage
@@ -59,6 +63,7 @@ import com.abk.kernel.extensions.AbkExtensionManagerScreen
 import com.abk.kernel.utils.DownloadDirectoryUtils
 import com.abk.kernel.utils.DownloadUtils
 import com.abk.kernel.utils.LocaleHelper
+import com.abk.kernel.ui.blur.BlurScreenScaffold
 import com.abk.kernel.ui.components.AbkScreenHorizontalPadding
 import com.abk.kernel.ui.components.AbkSegmentedButtonOption
 import com.abk.kernel.ui.components.AbkSingleChoiceSegmentedButtonRow
@@ -110,6 +115,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var showKernelRunnerSettings by remember { mutableStateOf(false) }
     var exportingDiagnostics by remember { mutableStateOf(false) }
     var showThemeSettings by rememberSaveable { mutableStateOf(false) }
     var showAppProfileTemplates by rememberSaveable { mutableStateOf(false) }
@@ -318,6 +324,15 @@ fun SettingsScreen(
         )
     }
 
+    if (showKernelRunnerSettings) {
+        KernelRunnerSettingsDialog(
+            state = state.kernelRunnerSettings,
+            onRefresh = vm::refreshKernelRunnerSettings,
+            onSave = vm::saveKernelRunnerSettings,
+            onDismiss = { showKernelRunnerSettings = false }
+        )
+    }
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val childPageTopInset = outerPadding.calculateTopPadding()
         val childPageBottomInset = outerPadding.calculateBottomPadding()
@@ -325,22 +340,25 @@ fun SettingsScreen(
             .fillMaxWidth()
             .height(maxHeight + childPageTopInset + childPageBottomInset)
             .offset(y = -childPageTopInset)
-        Scaffold(
+        BlurScreenScaffold(
+            blurConfig = state.blurConfig,
             containerColor = appPageBackgroundColor(uiSurfaceColor(MaterialTheme.colorScheme.surface)),
             topBar = {
                 ExpressiveTopBar(
                     title = stringResource(R.string.settings_title),
-                    scrollBehavior = scrollBehavior
+                    scrollBehavior = scrollBehavior,
+                    enableBlur = state.blurEnabled
                 )
             }
-        ) {
+        ) { topBarHeight ->
             SettingsMainContent(
-                padding = it,
+                topBarHeight = topBarHeight,
                 outerPadding = outerPadding,
                 state = state,
                 vm = vm,
                 scrollBehavior = scrollBehavior,
                 onLogout = { showLogoutDialog = true },
+                onOpenKernelRunnerSettings = { showKernelRunnerSettings = true },
                 onOpenThemeSettings = ::openThemeSettings,
                 onOpenAppProfileTemplates = ::openAppProfileTemplates,
                 onOpenManagerTools = ::openManagerTools,
@@ -383,7 +401,8 @@ fun SettingsScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -392,12 +411,13 @@ fun SettingsScreen(
                                 IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
-                            }
+                            },
+                            enableBlur = state.blurEnabled
                         )
                     }
-                ) {
+                ) { topBarHeight ->
                     ThemeSettingsScreen(
-                        padding = it,
+                        topBarHeight = topBarHeight,
                         themeMode = state.themeMode,
                         dynamicColorEnabled = state.dynamicColorEnabled,
                         customThemeColorArgb = state.customThemeColorArgb,
@@ -405,6 +425,9 @@ fun SettingsScreen(
                         backgroundUri = state.customBackgroundUri,
                         backgroundImageEnabled = state.backgroundImageEnabled,
                         uiSurfaceAlpha = state.uiSurfaceAlpha,
+                        blurEnabled = state.blurEnabled,
+                        blurBackgroundExpEnabled = state.blurBackgroundExpEnabled,
+                        predictiveBackEnabled = state.predictiveBackEnabled,
                         onThemeModeChange = { value -> vm.setThemeMode(value) },
                         onDynamicColorEnabledChange = { enabled, themeColor, accentColor ->
                             vm.setDynamicColorEnabled(enabled, themeColor, accentColor)
@@ -414,7 +437,12 @@ fun SettingsScreen(
                         },
                         onBackgroundImageChange = { uri -> vm.setBackgroundImageUri(uri) },
                         onBackgroundImageEnabledChange = { enabled -> vm.setBackgroundImageEnabled(enabled) },
-                        onUiSurfaceAlphaChange = { alpha -> vm.setUiSurfaceAlpha(alpha) }
+                        onUiSurfaceAlphaChange = { alpha -> vm.setUiSurfaceAlpha(alpha) },
+                        onUiSurfaceAlphaPreviewChange = { alpha -> vm.setUiSurfaceAlphaPreview(alpha) },
+                        onBlurEnabledChange = vm::setBlurEnabled,
+                        onBlurBackgroundExpEnabledChange = vm::setBlurBackgroundExpEnabled,
+                        onPredictiveBackEnabledChange = vm::setPredictiveBackEnabled,
+                        onUiSurfaceAlphaSync = vm::syncUiSurfaceAlphaPreview
                     )
                 }
             }
@@ -436,7 +464,8 @@ fun SettingsScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -446,6 +475,7 @@ fun SettingsScreen(
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             },
+                            enableBlur = state.blurEnabled,
                             actions = {
                                 IconButton(onClick = {
                                     refreshPresentation.beginRefresh()
@@ -456,9 +486,9 @@ fun SettingsScreen(
                             }
                         )
                     }
-                ) {
+                ) { topBarHeight ->
                     AppProfileTemplateSettingsScreen(
-                        padding = it,
+                        topBarHeight = topBarHeight,
                         state = state,
                         showRefreshLoading = refreshPresentation.showLoading && state.appProfileTemplates.isNotEmpty(),
                         onRefresh = {
@@ -494,6 +524,10 @@ fun SettingsScreen(
                     onBack = childPageBack::requestDismiss,
                     modifier = Modifier.fillMaxSize(),
                     containerColor = Color.Transparent,
+                    blurEnabled = state.blurEnabled,
+                    blurBackgroundExpEnabled = state.blurBackgroundExpEnabled,
+                    backgroundUri = state.customBackgroundUri,
+                    backgroundImageEnabled = state.backgroundImageEnabled,
                 )
             }
         }
@@ -514,7 +548,8 @@ fun SettingsScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -524,6 +559,7 @@ fun SettingsScreen(
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             },
+                            enableBlur = state.blurEnabled,
                             actions = {
                                 IconButton(onClick = {
                                     refreshPresentation.beginRefresh()
@@ -534,9 +570,9 @@ fun SettingsScreen(
                             }
                         )
                     }
-                ) {
+                ) { topBarHeight ->
                     ManagerToolsSettingsScreen(
-                        padding = it,
+                        topBarHeight = topBarHeight,
                         state = state,
                         showRefreshLoading = refreshPresentation.showLoading,
                         onSelinuxChange = vm::setSelinuxEnforcing,
@@ -563,7 +599,8 @@ fun SettingsScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -573,6 +610,7 @@ fun SettingsScreen(
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             },
+                            enableBlur = state.blurEnabled,
                             actions = {
                                 IconButton(onClick = {
                                     refreshPresentation.beginRefresh()
@@ -583,9 +621,9 @@ fun SettingsScreen(
                             }
                         )
                     }
-                ) {
+                ) { topBarHeight ->
                     KernelCapabilitiesSettingsScreen(
-                        padding = it,
+                        topBarHeight = topBarHeight,
                         state = state,
                         showRefreshLoading = refreshPresentation.showLoading,
                         onRefresh = {
@@ -614,7 +652,8 @@ fun SettingsScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -624,6 +663,7 @@ fun SettingsScreen(
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             },
+                            enableBlur = state.blurEnabled,
                             actions = {
                                 IconButton(onClick = {
                                     refreshPresentation.beginRefresh()
@@ -634,9 +674,9 @@ fun SettingsScreen(
                             }
                         )
                     }
-                ) {
+                ) { topBarHeight ->
                     SusfsControlScreen(
-                        padding = it,
+                        topBarHeight = topBarHeight,
                         state = state,
                         showRefreshLoading = refreshPresentation.showLoading,
                         onApply = vm::applySusfsConfig,
@@ -665,7 +705,8 @@ fun SettingsScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -674,12 +715,13 @@ fun SettingsScreen(
                                 IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
-                            }
+                            },
+                            enableBlur = state.blurEnabled
                         )
                     }
-                ) {
+                ) { topBarHeight ->
                     AboutRepositoryScreen(
-                        padding = it,
+                        topBarHeight = topBarHeight,
                         onOpenUrl = { openUrl(context, it) },
                         onOpenSourceLicenses = ::openOpenSourceLicenses
                     )
@@ -702,7 +744,8 @@ fun SettingsScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -711,12 +754,13 @@ fun SettingsScreen(
                                 IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
-                            }
+                            },
+                            enableBlur = state.blurEnabled
                         )
                     }
-                ) {
+                ) { topBarHeight ->
                     OpenSourceLicensesScreen(
-                        padding = it,
+                        topBarHeight = topBarHeight,
                         onOpenUrl = { openUrl(context, it) }
                     )
                 }
@@ -738,12 +782,13 @@ private fun SettingsPageBackground(
 
 @Composable
 private fun SettingsMainContent(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     outerPadding: PaddingValues,
     state: MainUiState,
     vm: MainViewModel,
     scrollBehavior: TopAppBarScrollBehavior,
     onLogout: () -> Unit,
+    onOpenKernelRunnerSettings: () -> Unit,
     onOpenThemeSettings: () -> Unit,
     onOpenAppProfileTemplates: () -> Unit,
     onOpenManagerTools: () -> Unit,
@@ -759,13 +804,13 @@ private fun SettingsMainContent(
     val context = LocalContext.current
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .nestedScroll(scrollBehavior.nestedScrollConnection)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         SettingsGroup(title = stringResource(R.string.settings_account)) {
             state.user?.let { user ->
                 ExpressiveListItem(
@@ -814,6 +859,13 @@ private fun SettingsMainContent(
                 },
                 onClick = { vm.openLoginOobe() }
             )
+            ExpressiveListItem(
+                title = stringResource(R.string.settings_kernel_runner_title),
+                subtitle = stringResource(R.string.settings_kernel_runner_desc),
+                leadingIcon = Icons.Default.Computer,
+                onClick = onOpenKernelRunnerSettings,
+                trailingContent = { Icon(Icons.Default.ChevronRight, contentDescription = null) }
+            )
         }
 
         SettingsGroup(title = stringResource(R.string.settings_build)) {
@@ -857,6 +909,20 @@ private fun SettingsMainContent(
             MirrorSettingsItem(
                 value = state.downloadMirrorBaseUrl,
                 onValueChange = { vm.setDownloadMirrorBaseUrl(it) }
+            )
+            ExpressiveListItem(
+                title = stringResource(R.string.settings_download_threads),
+                subtitle = stringResource(R.string.settings_download_threads_desc, state.downloadThreadCount),
+                leadingIcon = Icons.Default.Speed,
+                trailingContent = {
+                    Slider(
+                        value = state.downloadThreadCount.toFloat(),
+                        onValueChange = { vm.setDownloadThreadCount(it.toInt()) },
+                        valueRange = 1f..64f,
+                        steps = 62,
+                        modifier = Modifier.width(150.dp)
+                    )
+                }
             )
             Spacer(Modifier.height(10.dp))
             val hasArtifacts = state.downloadedArtifacts.isNotEmpty()
@@ -985,16 +1051,6 @@ private fun SettingsMainContent(
                 subtitle = stringResource(R.string.settings_notify_build_desc),
                 checked = state.notifyBuild,
                 onCheckedChange = { vm.setNotifyBuild(it) }
-            )
-        }
-
-        SettingsGroup(title = stringResource(R.string.settings_navigation)) {
-            SwitchSettingsItem(
-                icon = Icons.Default.ArrowBack,
-                title = stringResource(R.string.settings_predictive_back),
-                subtitle = stringResource(R.string.settings_predictive_back_desc),
-                checked = state.predictiveBackEnabled,
-                onCheckedChange = { vm.setPredictiveBackEnabled(it) }
             )
         }
 
@@ -1187,6 +1243,9 @@ private fun SecuritySettingsGroup(
     var showDisableConfirm1 by remember { mutableStateOf(false) }
     var showDisableConfirm2 by remember { mutableStateOf(false) }
     var showResetConfirm by remember { mutableStateOf(false) }
+    var showCustomSourceSecretDialog by remember { mutableStateOf(false) }
+    var showDeleteCustomSourceSecretConfirm by remember { mutableStateOf(false) }
+    var customSourcePat by remember { mutableStateOf("") }
     var importPublicKeyText by remember { mutableStateOf("") }
     var importPrivateKeyText by remember { mutableStateOf("") }
     var importError by remember { mutableStateOf<String?>(null) }
@@ -1208,6 +1267,9 @@ private fun SecuritySettingsGroup(
             }
             importError = null
         }
+    }
+    LaunchedEffect(canManageKeys) {
+        if (canManageKeys) vm.refreshCustomSourceSecretStatus()
     }
     SettingsGroup(title = stringResource(R.string.settings_security)) {
         SwitchSettingsItem(
@@ -1254,6 +1316,36 @@ private fun SecuritySettingsGroup(
             enabled = !state.artifactSigningOperationInFlight && state.artifactSigningVerificationEnabled && canManageKeys,
             onClick = { showResetConfirm = true }
         )
+        ExpressiveListItem(
+            title = stringResource(R.string.settings_custom_source_secret_title),
+            subtitle = when {
+                !canManageKeys -> stringResource(R.string.settings_security_requires_fork)
+                state.customSourceSecretConfigured -> stringResource(R.string.settings_custom_source_secret_configured)
+                else -> stringResource(R.string.settings_custom_source_secret_missing)
+            },
+            leadingIcon = Icons.Default.Password,
+            enabled = canManageKeys && !state.customSourceSecretOperationInFlight,
+            onClick = {
+                customSourcePat = ""
+                showCustomSourceSecretDialog = true
+            }
+        )
+        if (state.customSourceSecretConfigured) {
+            ExpressiveListItem(
+                title = stringResource(R.string.settings_custom_source_secret_delete),
+                subtitle = stringResource(R.string.settings_custom_source_secret_delete_desc),
+                leadingIcon = Icons.Default.Delete,
+                enabled = canManageKeys && !state.customSourceSecretOperationInFlight,
+                onClick = { showDeleteCustomSourceSecretConfirm = true }
+            )
+        }
+        if (state.customSourceSecretOperationInFlight) {
+            AbkInlineLoadingPill(
+                text = stringResource(R.string.settings_custom_source_secret_operation),
+                modifier = Modifier.fillMaxWidth(),
+                compact = false
+            )
+        }
         if (state.artifactSigningOperationInFlight) {
             AbkInlineLoadingPill(
                 text = stringResource(R.string.settings_security_operation_running),
@@ -1345,6 +1437,65 @@ private fun SecuritySettingsGroup(
             }
         )
     }
+
+    if (showCustomSourceSecretDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!state.customSourceSecretOperationInFlight) showCustomSourceSecretDialog = false
+            },
+            icon = { Icon(Icons.Default.Password, contentDescription = null) },
+            title = { Text(stringResource(R.string.settings_custom_source_secret_dialog_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(stringResource(R.string.settings_custom_source_secret_dialog_desc))
+                    OutlinedTextField(
+                        value = customSourcePat,
+                        onValueChange = { customSourcePat = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.build_source_pat)) },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.updateCustomSourceSecret(customSourcePat)
+                        customSourcePat = ""
+                        showCustomSourceSecretDialog = false
+                    },
+                    enabled = customSourcePat.isNotBlank() && !state.customSourceSecretOperationInFlight
+                ) { Text(stringResource(R.string.save)) }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showCustomSourceSecretDialog = false },
+                    enabled = !state.customSourceSecretOperationInFlight
+                ) { Text(stringResource(android.R.string.cancel)) }
+            }
+        )
+    }
+
+    if (showDeleteCustomSourceSecretConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteCustomSourceSecretConfirm = false },
+            icon = { Icon(Icons.Default.Delete, contentDescription = null) },
+            title = { Text(stringResource(R.string.settings_custom_source_secret_delete)) },
+            text = { Text(stringResource(R.string.settings_custom_source_secret_delete_confirm)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteCustomSourceSecret()
+                    showDeleteCustomSourceSecretConfirm = false
+                }) { Text(stringResource(R.string.delete)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteCustomSourceSecretConfirm = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1398,7 +1549,7 @@ private enum class SecurityKeyImportTarget {
 
 @Composable
 private fun KernelCapabilitiesSettingsScreen(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     state: MainUiState,
     showRefreshLoading: Boolean,
     onRefresh: () -> Unit,
@@ -1409,12 +1560,12 @@ private fun KernelCapabilitiesSettingsScreen(
 
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         Crossfade(targetState = showRefreshLoading || showInitialLoading, label = "kernel-capabilities-refresh") { refreshing ->
             if (refreshing) {
                 AbkInlineLoadingPill(
@@ -1656,7 +1807,7 @@ private fun ManagerModeSettingItem(
 
 @Composable
 private fun ManagerToolsSettingsScreen(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     state: MainUiState,
     showRefreshLoading: Boolean,
     onSelinuxChange: (Boolean) -> Unit,
@@ -1680,12 +1831,12 @@ private fun ManagerToolsSettingsScreen(
 
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         Crossfade(targetState = showRefreshLoading || showInitialLoading, label = "manager-tools-refresh") { refreshing ->
             if (refreshing) {
                 AbkInlineLoadingPill(
@@ -1780,7 +1931,7 @@ private fun selinuxModeLabel(mode: String): String =
 
 @Composable
 private fun AppProfileTemplateSettingsScreen(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     state: MainUiState,
     showRefreshLoading: Boolean,
     onRefresh: () -> Unit,
@@ -1802,12 +1953,12 @@ private fun AppProfileTemplateSettingsScreen(
 
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         Crossfade(targetState = showRefreshLoading, label = "template-refresh") { refreshing ->
             if (refreshing) {
                 AbkInlineLoadingPill(
@@ -1957,7 +2108,7 @@ private fun defaultAppProfileTemplateJson(): String =
 
 @Composable
 private fun ThemeSettingsScreen(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     themeMode: String,
     dynamicColorEnabled: Boolean,
     customThemeColorArgb: Int?,
@@ -1965,13 +2116,28 @@ private fun ThemeSettingsScreen(
     backgroundUri: String?,
     backgroundImageEnabled: Boolean,
     uiSurfaceAlpha: Float,
+    blurEnabled: Boolean,
+    blurBackgroundExpEnabled: Boolean,
+    predictiveBackEnabled: Boolean,
     onThemeModeChange: (String) -> Unit,
     onDynamicColorEnabledChange: (Boolean, Int?, Int?) -> Unit,
     onCustomThemeColorsChange: (Int, Int) -> Unit,
     onBackgroundImageChange: (String?) -> Unit,
     onBackgroundImageEnabledChange: (Boolean) -> Unit,
-    onUiSurfaceAlphaChange: (Float) -> Unit
+    onUiSurfaceAlphaChange: (Float) -> Unit,
+    onUiSurfaceAlphaPreviewChange: (Float) -> Unit,
+    onBlurEnabledChange: (Boolean) -> Unit,
+    onBlurBackgroundExpEnabledChange: (Boolean) -> Unit,
+    onPredictiveBackEnabledChange: (Boolean) -> Unit,
+    onUiSurfaceAlphaSync: () -> Unit
 ) {
+    // An interrupted slider drag (back gesture / backgrounding / the slider being
+    // disabled mid-drag) never fires onValueChangeFinished, so the in-memory preview
+    // would stay stuck on an un-persisted alpha for the whole session. Restore it from
+    // prefs when the settings page goes away.
+    DisposableEffect(Unit) {
+        onDispose(onUiSurfaceAlphaSync)
+    }
     val context = LocalContext.current
     val dynamicColorAvailable = isDynamicColorAvailable()
     val effectiveDynamicColorEnabled = dynamicColorAvailable && dynamicColorEnabled
@@ -1999,12 +2165,12 @@ private fun ThemeSettingsScreen(
 
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         SettingsGroup(title = stringResource(R.string.settings_appearance_mode)) {
             themes.forEach { (key, label, icon) ->
                 val selected = themeMode == key
@@ -2067,6 +2233,16 @@ private fun ThemeSettingsScreen(
             }
         }
 
+        SettingsGroup(title = stringResource(R.string.settings_navigation)) {
+            SwitchSettingsItem(
+                icon = Icons.Default.SwipeLeft,
+                title = stringResource(R.string.settings_predictive_back),
+                subtitle = stringResource(R.string.settings_predictive_back_desc),
+                checked = predictiveBackEnabled,
+                onCheckedChange = onPredictiveBackEnabledChange
+            )
+        }
+
         SettingsGroup(title = stringResource(R.string.settings_background)) {
             SwitchSettingsItem(
                 icon = Icons.Default.Image,
@@ -2098,10 +2274,50 @@ private fun ThemeSettingsScreen(
                     onClick = { onBackgroundImageChange(null) }
                 )
             }
+            // Blur controls (merged in from the former "模糊" card): they pop out above the
+            // opacity slider once a custom background is configured, reusing the original
+            // expand/fade animation. The master switch controls every blur surface (AGSL
+            // bars on API 33+ and the software card blur on every API level); the nested
+            // "render custom background into blur" item expands out from below the toggle
+            // when blur is enabled.
+            val backgroundConfigured = backgroundImageEnabled && !backgroundUri.isNullOrBlank()
+            AnimatedVisibility(
+                visible = backgroundConfigured,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ExpressiveSwitchItem(
+                        title = stringResource(R.string.settings_blur),
+                        subtitle = stringResource(R.string.settings_blur_desc),
+                        icon = Icons.Default.BlurOn,
+                        checked = blurEnabled,
+                        onCheckedChange = onBlurEnabledChange
+                    )
+                    AnimatedVisibility(
+                        visible = blurEnabled,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        ExpressiveSwitchItem(
+                            title = stringResource(R.string.settings_blur_background),
+                            subtitle = stringResource(R.string.settings_blur_background_desc),
+                            icon = Icons.Default.Image,
+                            checked = blurBackgroundExpEnabled,
+                            enabled = backgroundConfigured,
+                            onCheckedChange = onBlurBackgroundExpEnabledChange
+                        )
+                    }
+                }
+            }
             BackgroundAlphaControl(
                 alpha = uiSurfaceAlpha,
                 enabled = backgroundImageEnabled && !backgroundUri.isNullOrBlank(),
-                onAlphaChange = onUiSurfaceAlphaChange
+                onAlphaChange = onUiSurfaceAlphaPreviewChange,
+                onAlphaChangeFinished = onUiSurfaceAlphaChange
             )
         }
 
@@ -2113,8 +2329,13 @@ private fun ThemeSettingsScreen(
 private fun BackgroundAlphaControl(
     alpha: Float,
     enabled: Boolean,
-    onAlphaChange: (Float) -> Unit
+    onAlphaChange: (Float) -> Unit,
+    onAlphaChangeFinished: ((Float) -> Unit)? = null
 ) {
+    // Keep drag state local so every pointer tick redraws the slider and the shared
+    // surface-alpha CompositionLocal without recomposing this entire settings page.
+    // Persistence remains deferred until the gesture finishes.
+    var previewAlpha by remember(alpha) { mutableFloatStateOf(alpha.coerceIn(0f, 1f)) }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -2131,14 +2352,20 @@ private fun BackgroundAlphaControl(
                 color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                text = "${(alpha.coerceIn(0f, 1f) * 100).toInt()}%",
+                text = "${(previewAlpha * 100).toInt()}%",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         Slider(
-            value = alpha.coerceIn(0f, 1f),
-            onValueChange = onAlphaChange,
+            value = previewAlpha,
+            onValueChange = {
+                previewAlpha = it
+                onAlphaChange(it)
+            },
+            onValueChangeFinished = {
+                onAlphaChangeFinished?.invoke(previewAlpha)
+            },
             valueRange = 0f..1f,
             enabled = enabled
         )
@@ -2281,18 +2508,19 @@ private fun isDynamicColorAvailable(): Boolean =
 
 @Composable
 private fun AboutRepositoryScreen(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     onOpenUrl: (String) -> Unit,
     onOpenSourceLicenses: () -> Unit
 ) {
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = AbkScreenHorizontalPadding, vertical = 12.dp),
+            .padding(horizontal = AbkScreenHorizontalPadding)
+            .padding(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         ExpressiveHeroCard(
             title = stringResource(R.string.app_full_name),
             subtitle = stringResource(R.string.settings_about_intro),
@@ -2341,17 +2569,18 @@ private fun AboutRepositoryScreen(
 
 @Composable
 private fun OpenSourceLicensesScreen(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     onOpenUrl: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = AbkScreenHorizontalPadding, vertical = 12.dp),
+            .padding(horizontal = AbkScreenHorizontalPadding)
+            .padding(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         ExpressiveHeroCard(
             title = stringResource(R.string.settings_open_source_licenses),
             subtitle = stringResource(R.string.settings_open_source_licenses_intro),
@@ -2490,7 +2719,7 @@ private fun openSourceNoticeGroups(): List<OpenSourceNoticeGroup> = listOf(
             OpenSourceNotice("KernelSU", "GPL-3.0", "workflow setup.sh source", "https://github.com/tiann/KernelSU"),
             OpenSourceNotice("KernelSU Next", "GPL-3.0", "workflow setup.sh source", "https://github.com/KernelSU-Next/KernelSU-Next"),
             OpenSourceNotice("SukiSU Ultra", "GPL-3.0", "kernel setup, ksud, android_bootimg", "https://github.com/SukiSU-Ultra/SukiSU-Ultra"),
-            OpenSourceNotice("ReSukiSU", "GPL-3.0", "workflow setup.sh source", "https://github.com/ReSukiSU/ReSukiSU"),
+            OpenSourceNotice("BakaSU", "GPL-3.0", "workflow setup.sh source", "https://github.com/Baka-SU/BakaSU"),
             OpenSourceNotice("SUSFS", "GPL-2.0", "kernel patches and module integration", "https://gitlab.com/simonpunk/susfs4ksu"),
             OpenSourceNotice("ShirkNeko/susfs4ksu", "GPL-2.0", "GitHub mirror / patch source", "https://github.com/ShirkNeko/susfs4ksu"),
             OpenSourceNotice("SukiSU_patch", "GPL-2.0", "workflow patch source", "https://github.com/ShirkNeko/SukiSU_patch"),
@@ -2793,7 +3022,7 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
             stringResource(R.string.settings_navigation) -> stringResource(R.string.settings_group_navigation_desc)
             stringResource(R.string.settings_language) -> stringResource(R.string.settings_language_desc)
             stringResource(R.string.settings_theme) -> stringResource(R.string.settings_group_theme_desc)
-            "ReSukiSU" -> stringResource(R.string.settings_group_backend_desc, "ReSukiSU")
+            "BakaSU" -> stringResource(R.string.settings_group_backend_desc, "BakaSU")
             "SukiSU" -> stringResource(R.string.settings_group_backend_desc, "SukiSU")
             "KernelSU" -> stringResource(R.string.settings_group_backend_desc, "KernelSU")
             stringResource(R.string.settings_manager_settings) -> stringResource(R.string.settings_group_manager_settings_desc)
@@ -2817,10 +3046,10 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
             stringResource(R.string.settings_security) -> Icons.Default.VerifiedUser
             stringResource(R.string.settings_app_update) -> Icons.Default.Download
             stringResource(R.string.settings_notification) -> Icons.Default.Notifications
-            stringResource(R.string.settings_navigation) -> Icons.Default.ArrowBack
+            stringResource(R.string.settings_navigation) -> Icons.Default.SwipeLeft
             stringResource(R.string.settings_language) -> Icons.Default.Language
             stringResource(R.string.settings_theme) -> Icons.Default.Palette
-            "ReSukiSU", "SukiSU", "KernelSU" -> Icons.Default.AdminPanelSettings
+            "BakaSU", "SukiSU", "KernelSU" -> Icons.Default.AdminPanelSettings
             stringResource(R.string.settings_manager_settings) -> Icons.Default.AdminPanelSettings
             stringResource(R.string.settings_kernel_capabilities) -> Icons.Default.Tune
             stringResource(R.string.settings_tcp_congestion_control) -> Icons.Default.Tune

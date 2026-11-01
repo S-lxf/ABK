@@ -73,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -89,6 +90,15 @@ import com.abk.kernel.ui.components.AbkSnackbarHost
 import com.abk.kernel.ui.components.animateBottomNavForChildPage
 import com.abk.kernel.ui.components.showAbkSnackbar
 import com.abk.kernel.extensions.AbkExtensionBootstrapActivity
+import com.abk.kernel.ui.blur.LocalBlurBackgroundAnchor
+import com.abk.kernel.ui.blur.LocalBlurState
+import com.abk.kernel.ui.blur.LocalBlurredCardBackground
+import com.abk.kernel.ui.blur.LocalBlurredCardBackgroundEnabled
+import com.abk.kernel.ui.blur.blurEffect
+import com.abk.kernel.ui.blur.blurSourceBody
+import com.abk.kernel.ui.blur.isBlurActive
+import com.abk.kernel.ui.blur.rememberBlurBackdrop
+import com.abk.kernel.ui.blur.rememberBlurBackgroundPainter
 import com.abk.kernel.ui.screens.BuildScreen
 import com.abk.kernel.ui.screens.FlashScreen
 import com.abk.kernel.ui.screens.InstalledModulesScreen
@@ -103,6 +113,7 @@ import com.abk.kernel.ui.theme.LocalUiSurfaceAlpha
 import com.abk.kernel.ui.theme.appPageBackgroundColor
 import com.abk.kernel.ui.theme.uiSurfaceColor
 import com.abk.kernel.viewmodel.MainViewModel
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
@@ -123,6 +134,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: MainViewModel = viewModel()
             val state by vm.uiState.collectAsState()
+            val uiSurfaceAlphaPreview by vm.uiSurfaceAlphaPreview.collectAsState(initial = state.uiSurfaceAlpha)
             var extensionBootstrapIssued by rememberSaveable { mutableStateOf(false) }
 
             LaunchedEffect(Unit) {
@@ -161,7 +173,8 @@ class MainActivity : ComponentActivity() {
                 AppBackgroundHost(
                     backgroundUri = state.customBackgroundUri,
                     backgroundEnabled = state.backgroundImageEnabled,
-                    uiSurfaceAlpha = state.uiSurfaceAlpha
+                    uiSurfaceAlpha = uiSurfaceAlphaPreview,
+                    blurBackgroundEnabled = state.blurConfig.wantsBackgroundPainter,
                 ) {
                     when {
                         !state.termsLoaded -> Surface(
@@ -198,7 +211,15 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             if (state.showOobe) {
-                                CompositionLocalProvider(LocalUiSurfaceAlpha provides 1f) {
+                                // OOBE is an opaque onboarding screen; clear the blur
+                                // locals so its cards render opaque instead of showing a
+                                // translucent frosted backdrop under the wallpaper.
+                                CompositionLocalProvider(
+                                    LocalUiSurfaceAlpha provides 1f,
+                                    LocalBlurredCardBackground provides null,
+                                    LocalBlurredCardBackgroundEnabled provides false,
+                                    LocalBlurBackgroundAnchor provides null,
+                                ) {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxSize()
@@ -431,6 +452,7 @@ private fun AbkMainScaffold(
     var rootAuthDetailPageVisible by rememberSaveable { mutableStateOf(false) }
     var managerPatchPageVisible by rememberSaveable { mutableStateOf(false) }
     var lastBackAt by remember { mutableStateOf(0L) }
+    var exitBackWindowOpen by remember { mutableStateOf(false) }
     val runtimeNativeManagerActive = state.hasNativeManagerPermission
     val visibleTabs = remember(state.runtimeNavigationEnabled, state.rootGranted, runtimeNativeManagerActive) {
         if (state.runtimeNavigationEnabled) {
@@ -561,16 +583,27 @@ private fun AbkMainScaffold(
 
     fun handleTopLevelBack() {
         val now = System.currentTimeMillis()
-        if (now - lastBackAt <= EXIT_BACK_INTERVAL_MS) {
-            context.findActivity()?.finish()
-        } else {
+        if (now - lastBackAt > EXIT_BACK_INTERVAL_MS) {
             lastBackAt = now
+            if (state.predictiveBackEnabled) exitBackWindowOpen = true
             Toast.makeText(context, context.getString(R.string.press_again_exit), Toast.LENGTH_SHORT).show()
+        } else if (!state.predictiveBackEnabled || exitBackWindowOpen) {
+            context.findActivity()?.finish()
         }
     }
 
     if (!childPageVisible) {
-        BackHandler(onBack = ::handleTopLevelBack)
+        BackHandler(
+            enabled = !state.predictiveBackEnabled || !exitBackWindowOpen,
+            onBack = ::handleTopLevelBack
+        )
+    }
+
+    LaunchedEffect(exitBackWindowOpen) {
+        if (exitBackWindowOpen) {
+            delay(EXIT_BACK_INTERVAL_MS)
+            exitBackWindowOpen = false
+        }
     }
 
     val navProgressAnim = remember { Animatable(1f) }
@@ -581,6 +614,29 @@ private fun AbkMainScaffold(
         )
     }
     val navProgress = navProgressAnim.value
+
+    // Bottom-nav progress goes 1f (bar shown) → 0f (a child page slides the bar off).
+    // Only run the bar backdrop and its blur pipeline while the bar is actually on
+    // screen; once it is fully hidden (matches ChildPageMotion's hide epsilon) or the
+    // opaque OOBE overlay covers everything, every recordLayer + blur pass is invisible,
+    // so it is switched off.
+    val barBlurOnScreen = !state.showOobe && navProgress > 0.02f
+    val blurBackdrop = rememberBlurBackdrop(
+        enableBlur = state.blurConfig.blurEnabled && barBlurOnScreen,
+        surfaceColor = MaterialTheme.colorScheme.surfaceContainer,
+        backgroundPainter = if (barBlurOnScreen) {
+            rememberBlurBackgroundPainter(state.blurConfig)
+        } else {
+            null
+        },
+    )
+
+    CompositionLocalProvider(
+        LocalBlurState provides blurBackdrop,
+    ) {
+        // Gate bar transparency on the frosted effect actually rendering (API >= 33),
+        // so pre-Android-13 devices fall back to the opaque surface color.
+        val blurActive = isBlurActive(state.blurEnabled && barBlurOnScreen)
 
     Box(
         modifier = Modifier
@@ -603,8 +659,14 @@ private fun AbkMainScaffold(
                 contentAlignment = Alignment.Center
             ) {
                 NavigationRail(
-                    modifier = Modifier.fillMaxSize(),
-                    containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (blurActive) Modifier.blurEffect() else Modifier),
+                    containerColor = if (blurActive) {
+                        Color.Transparent
+                    } else {
+                        uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+                    }
                 ) {
                     visibleTabs.forEach { tab ->
                         NavigationRailItem(
@@ -650,8 +712,13 @@ private fun AbkMainScaffold(
                         val hidden = 1f - navProgress
                         translationY = hidden * bottomBarHeightPx
                         alpha = 1f - (hidden * 0.15f)
-                    },
-                containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer),
+                    }
+                    .then(if (blurActive) Modifier.blurEffect() else Modifier),
+                containerColor = if (blurActive) {
+                    Color.Transparent
+                } else {
+                    uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+                },
                 tonalElevation = 0.dp
             ) {
                 visibleTabs.forEach { tab ->
@@ -691,6 +758,7 @@ private fun AbkMainScaffold(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(1f)
+                .blurSourceBody()
         ) {
             Box(
                 modifier = Modifier
@@ -788,6 +856,7 @@ private fun AbkMainScaffold(
                 .zIndex(4f)
         )
     }
+}
 }
 
 @Composable

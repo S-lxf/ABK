@@ -24,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
@@ -35,6 +36,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
@@ -45,6 +47,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -56,7 +59,10 @@ import com.abk.kernel.data.model.BuildProgress
 import com.abk.kernel.data.model.BuildStepProgress
 import com.abk.kernel.data.model.BuildStatus
 import com.abk.kernel.data.model.BUILD_TARGET_GKI
+import com.abk.kernel.data.model.BUILD_TARGET_CUSTOM_SOURCE
 import com.abk.kernel.data.model.BUILD_TARGET_ONEPLUS
+import com.abk.kernel.data.model.SOURCE_ACCESS_GITHUB_PRIVATE
+import com.abk.kernel.data.model.SOURCE_ACCESS_PUBLIC
 import com.abk.kernel.data.model.CustomExternalModule
 import com.abk.kernel.data.model.CustomExternalModuleEntryKind
 import com.abk.kernel.data.model.CustomExternalModuleStage
@@ -67,8 +73,9 @@ import com.abk.kernel.data.model.KernelSupport
 import com.abk.kernel.data.model.KernelBuildConfig
 import com.abk.kernel.data.model.KSU_BRANCH_CUSTOM
 import com.abk.kernel.data.model.KSU_BRANCH_LATEST
+import com.abk.kernel.data.model.KSU_BRANCH_STABLE
 import com.abk.kernel.data.model.KSU_VARIANT_NONE
-import com.abk.kernel.data.model.KSU_VARIANT_RESUKISU
+import com.abk.kernel.data.model.KSU_VARIANT_BAKASU
 import com.abk.kernel.data.model.KSU_VARIANT_SUKISU
 import com.abk.kernel.data.model.ModuleCatalogItem
 import com.abk.kernel.data.model.ModuleCatalogItemKind
@@ -77,6 +84,9 @@ import com.abk.kernel.data.model.WorkflowRun
 import com.abk.kernel.data.model.isKernelBuild
 import com.abk.kernel.data.model.isManagerBuild
 import com.abk.kernel.data.model.isManagerDevBuild
+import com.abk.kernel.ui.blur.BlurScreenScaffold
+import com.abk.kernel.ui.blur.blurredCardBackground
+import com.abk.kernel.ui.blur.blurredCardSurfaceColor
 import com.abk.kernel.ui.components.AbkScreenHorizontalPadding
 import com.abk.kernel.ui.components.AbkSegmentedButtonOption
 import com.abk.kernel.ui.components.AbkSingleChoiceSegmentedButtonRow
@@ -127,6 +137,7 @@ fun BuildScreen(
     val rawConfig = state.buildConfig
     val config = remember(rawConfig) { KernelSupport.normalize(rawConfig) }
     val isOnePlusBuild = config.buildTarget == BUILD_TARGET_ONEPLUS
+    val isCustomSourceBuild = config.buildTarget == BUILD_TARGET_CUSTOM_SOURCE
     val recommended = state.recommendedBuildConfig
     val motionScheme = MaterialTheme.motionScheme
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
@@ -155,12 +166,17 @@ fun BuildScreen(
         buildTimePreview(context, config.buildTime)
     }
     var showConfirmDialog by remember { mutableStateOf(false) }
+    var showDeviceTokenRiskDialog by remember { mutableStateOf(false) }
+    var customSourcePat by remember { mutableStateOf("") }
+    var useDeviceFlowSourceToken by remember { mutableStateOf(false) }
+    var sourceCredentialAdvanced by rememberSaveable { mutableStateOf(false) }
     var showBuildSubmittedDialog by rememberSaveable { mutableStateOf(false) }
     var showSavePlanDialog by remember { mutableStateOf(false) }
     var showImportPlanDialog by remember { mutableStateOf(false) }
     var showPlanLibraryPage by rememberSaveable { mutableStateOf(false) }
     var showBuildQueuePage by rememberSaveable { mutableStateOf(false) }
     var showKernelOptionsPage by rememberSaveable { mutableStateOf(false) }
+    var showDefconfigEditorPage by rememberSaveable { mutableStateOf(false) }
     var planToolsExpanded by rememberSaveable { mutableStateOf(false) }
     var savePlanName by remember { mutableStateOf("") }
     var importPlanCode by remember { mutableStateOf("") }
@@ -178,6 +194,7 @@ fun BuildScreen(
     var showClearKernelOptionsDialog by remember { mutableStateOf(false) }
     var clearAllKernelOptions by rememberSaveable { mutableStateOf(false) }
     var sharePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
+    var pendingPrivatePlanShare by remember { mutableStateOf<Pair<BuildPlan, BuildPlanShareScope>?>(null) }
     var renamePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
     var renamePlanName by remember { mutableStateOf("") }
     var deletePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
@@ -238,7 +255,7 @@ fun BuildScreen(
     val canToggleKernelOptionClearAll = kernelOptionSearchQuery.isNotBlank() &&
         filteredKernelOptions.size != config.customKernelOptions.size
     val clearAllKernelOptionsTarget = !canToggleKernelOptionClearAll || clearAllKernelOptions
-    val childPageVisible = showPlanLibraryPage || showBuildQueuePage || showKernelOptionsPage
+    val childPageVisible = showPlanLibraryPage || showBuildQueuePage || showKernelOptionsPage || showDefconfigEditorPage
     val childPageTransition = rememberChildPageOverlayTransition(
         visible = childPageVisible,
         label = "build-child-page"
@@ -257,10 +274,17 @@ fun BuildScreen(
         if (config != rawConfig) vm.updateBuildConfig(config)
     }
 
+    LaunchedEffect(isCustomSourceBuild, config.sourceAccessMode, state.isLoggedIn, state.forkRepo?.id) {
+        if (isCustomSourceBuild && config.sourceAccessMode == SOURCE_ACCESS_GITHUB_PRIVATE) {
+            vm.refreshCustomSourceSecretStatus()
+        }
+    }
+
     fun closeChildPage() {
         showPlanLibraryPage = false
         showBuildQueuePage = false
         showKernelOptionsPage = false
+        showDefconfigEditorPage = false
         kernelOptionSearchQuery = ""
         showKernelOptionActionMenu = false
         showClearKernelOptionsDialog = false
@@ -276,6 +300,8 @@ fun BuildScreen(
     fun openPlanLibraryPage() {
         childPageBack.resetProgress()
         showBuildQueuePage = false
+        showKernelOptionsPage = false
+        showDefconfigEditorPage = false
         showPlanLibraryPage = true
     }
 
@@ -283,6 +309,7 @@ fun BuildScreen(
         childPageBack.resetProgress()
         showPlanLibraryPage = false
         showKernelOptionsPage = false
+        showDefconfigEditorPage = false
         kernelOptionSearchQuery = ""
         showBuildQueuePage = true
     }
@@ -291,8 +318,17 @@ fun BuildScreen(
         childPageBack.resetProgress()
         showPlanLibraryPage = false
         showBuildQueuePage = false
+        showDefconfigEditorPage = false
         kernelOptionSearchQuery = ""
         showKernelOptionsPage = true
+    }
+
+    fun openDefconfigEditorPage() {
+        childPageBack.resetProgress()
+        showPlanLibraryPage = false
+        showBuildQueuePage = false
+        showKernelOptionsPage = false
+        showDefconfigEditorPage = true
     }
 
     LaunchedEffect(isOnePlusBuild, showKernelOptionsPage) {
@@ -316,6 +352,33 @@ fun BuildScreen(
         editingModuleSetMetadata = null
         editingModuleSetChildIds = emptyList()
         editingModuleSetStageSelections = emptyMap()
+        pendingCustomModuleUrl = ""
+    }
+
+    fun configureModuleSetEditor(
+        group: BuildCustomModuleGroup,
+        metadata: ExternalModuleMetadata,
+        currentGroupModules: List<CustomExternalModule>
+    ) {
+        val selectedChildIds = currentGroupModules
+            .mapNotNull { childId -> childId.childId.trim().takeIf { it.isNotBlank() } }
+            .distinct()
+        val stageSelections = metadata.children.associate { child ->
+            val existingStages = currentGroupModules
+                .filter { it.childId.equals(child.id, ignoreCase = true) }
+                .map { CustomExternalModuleStage.normalize(it.stage) }
+                .distinct()
+                .filter { it in child.supportedStages }
+            child.id to existingStages.ifEmpty {
+                child.recommendedStages
+                    .filter { it in child.supportedStages }
+                    .ifEmpty { listOf(child.defaultStage) }
+            }
+        }
+        editingModuleSetGroup = group
+        editingModuleSetMetadata = metadata
+        editingModuleSetChildIds = selectedChildIds
+        editingModuleSetStageSelections = stageSelections
     }
 
     fun openModuleSetEditor(group: BuildCustomModuleGroup) {
@@ -331,27 +394,9 @@ fun BuildScreen(
                     (
                         it.groupRepoUrl.equals(repoUrl, ignoreCase = true) ||
                             (it.groupRepoUrl.isBlank() && it.url.equals(repoUrl, ignoreCase = true))
-                        )
+                    )
             }
-            val selectedChildIds = currentGroupModules
-                .mapNotNull { childId -> childId.childId.trim().takeIf { it.isNotBlank() } }
-                .distinct()
-            val stageSelections = metadata.children.associate { child ->
-                val existingStages = currentGroupModules
-                    .filter { it.childId.equals(child.id, ignoreCase = true) }
-                    .map { CustomExternalModuleStage.normalize(it.stage) }
-                    .distinct()
-                    .filter { it in child.supportedStages }
-                child.id to existingStages.ifEmpty {
-                    child.recommendedStages
-                        .filter { it in child.supportedStages }
-                        .ifEmpty { listOf(child.defaultStage) }
-                }
-            }
-            editingModuleSetGroup = group
-            editingModuleSetMetadata = metadata
-            editingModuleSetChildIds = selectedChildIds
-            editingModuleSetStageSelections = stageSelections
+            configureModuleSetEditor(group, metadata, currentGroupModules)
         }
     }
 
@@ -394,7 +439,61 @@ fun BuildScreen(
                 val disabledLabel = stringResource(R.string.build_feature_disabled)
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(stringResource(R.string.build_config_overview), fontWeight = FontWeight.SemiBold)
-                    if (isOnePlusBuild) {
+                    if (isCustomSourceBuild) {
+                        Text(stringResource(R.string.build_source_manifest_notice))
+                        Text(stringResource(R.string.build_source_repo_line, config.sourceUrl))
+                        Text(stringResource(R.string.build_source_ref_line, config.sourceRef))
+                        Text(stringResource(R.string.build_source_patch_line, config.osPatchLevel))
+                        config.sourceDeviceLabel.takeIf { it.isNotBlank() }?.let {
+                            Text(stringResource(R.string.build_source_device_line, it))
+                        }
+                        Text(stringResource(R.string.build_source_defconfig_line, config.sourceDefconfigs.joinToString(" -> ")))
+                        if (config.sourceAccessMode == SOURCE_ACCESS_GITHUB_PRIVATE) {
+                            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                            Text(stringResource(R.string.build_source_private_credential_title), fontWeight = FontWeight.SemiBold)
+                            Text(
+                                stringResource(
+                                    if (state.customSourceSecretConfigured) {
+                                        R.string.build_source_secret_reuse_desc
+                                    } else {
+                                        R.string.build_source_secret_required_desc
+                                    }
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            OutlinedTextField(
+                                value = customSourcePat,
+                                onValueChange = { customSourcePat = it; useDeviceFlowSourceToken = false },
+                                label = { Text(stringResource(R.string.build_source_pat)) },
+                                placeholder = { Text("github_pat_...") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            TextButton(onClick = { sourceCredentialAdvanced = !sourceCredentialAdvanced }) {
+                                Icon(Icons.Default.AdminPanelSettings, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text(stringResource(R.string.build_source_credential_advanced))
+                            }
+                            AnimatedVisibility(sourceCredentialAdvanced) {
+                                Column {
+                                    SwitchRow(
+                                        stringResource(R.string.build_source_use_device_token),
+                                        useDeviceFlowSourceToken
+                                    ) {
+                                        useDeviceFlowSourceToken = it
+                                        if (it) customSourcePat = ""
+                                    }
+                                    Text(
+                                        stringResource(R.string.build_source_device_token_risk),
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    } else if (isOnePlusBuild) {
                         Text(stringResource(R.string.build_target_line, buildTargetLabel(config.buildTarget)))
                         Text(stringResource(R.string.build_oneplus_device_line, KernelSupport.onePlusDeviceLabel(config.onePlusDeviceManifest)))
                         Text(stringResource(R.string.build_oneplus_kernel_line, config.androidVersion, config.kernelVersion))
@@ -485,14 +584,54 @@ fun BuildScreen(
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    showConfirmDialog = false
-                    vm.dispatchBuild(config)
-                    showBuildSubmittedDialog = true
-                }) { Text(stringResource(R.string.confirm)) }
+                Button(
+                    onClick = {
+                        if (isCustomSourceBuild &&
+                            config.sourceAccessMode == SOURCE_ACCESS_GITHUB_PRIVATE &&
+                            useDeviceFlowSourceToken
+                        ) {
+                            showDeviceTokenRiskDialog = true
+                        } else {
+                            showConfirmDialog = false
+                            vm.dispatchBuild(config, customSourcePat = customSourcePat)
+                            customSourcePat = ""
+                            showBuildSubmittedDialog = true
+                        }
+                    },
+                    enabled = !isCustomSourceBuild ||
+                        config.sourceAccessMode != SOURCE_ACCESS_GITHUB_PRIVATE ||
+                        state.customSourceSecretConfigured ||
+                        customSourcePat.isNotBlank() ||
+                        useDeviceFlowSourceToken
+                ) { Text(stringResource(R.string.confirm)) }
             },
             dismissButton = {
                 TextButton(onClick = { showConfirmDialog = false }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
+
+    if (showDeviceTokenRiskDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeviceTokenRiskDialog = false },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text(stringResource(R.string.build_source_device_token_confirm_title)) },
+            text = { Text(stringResource(R.string.build_source_device_token_confirm_desc)) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeviceTokenRiskDialog = false
+                        showConfirmDialog = false
+                        vm.dispatchBuild(config, useDeviceFlowToken = true)
+                        showBuildSubmittedDialog = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text(stringResource(R.string.confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeviceTokenRiskDialog = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
             }
         )
     }
@@ -622,13 +761,46 @@ fun BuildScreen(
             plan = plan,
             onDismiss = { sharePlanTarget = null },
             onShare = { scope ->
-                copyTextToClipboard(
-                    context = context,
-                    label = context.getString(R.string.build_plan_clipboard_label),
-                    text = vm.shareBuildPlanCode(plan.config, plan.name, scope)
-                )
-                sharePlanTarget = null
-                Toast.makeText(context, context.getString(R.string.build_plan_code_copied), Toast.LENGTH_SHORT).show()
+                if (scope == BuildPlanShareScope.FULL &&
+                    plan.config.buildTarget == BUILD_TARGET_CUSTOM_SOURCE &&
+                    plan.config.sourceAccessMode == SOURCE_ACCESS_GITHUB_PRIVATE
+                ) {
+                    pendingPrivatePlanShare = plan to scope
+                    sharePlanTarget = null
+                } else {
+                    copyTextToClipboard(
+                        context = context,
+                        label = context.getString(R.string.build_plan_clipboard_label),
+                        text = vm.shareBuildPlanCode(plan.config, plan.name, scope)
+                    )
+                    sharePlanTarget = null
+                    Toast.makeText(context, context.getString(R.string.build_plan_code_copied), Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
+    pendingPrivatePlanShare?.let { (plan, scope) ->
+        AlertDialog(
+            onDismissRequest = { pendingPrivatePlanShare = null },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text(stringResource(R.string.build_source_private_plan_share_title)) },
+            text = { Text(stringResource(R.string.build_source_private_plan_share_desc, plan.config.sourceUrl)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    copyTextToClipboard(
+                        context = context,
+                        label = context.getString(R.string.build_plan_clipboard_label),
+                        text = vm.shareBuildPlanCode(plan.config, plan.name, scope)
+                    )
+                    pendingPrivatePlanShare = null
+                    Toast.makeText(context, context.getString(R.string.build_plan_code_copied), Toast.LENGTH_SHORT).show()
+                }) { Text(stringResource(R.string.confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingPrivatePlanShare = null }) {
+                    Text(stringResource(R.string.cancel))
+                }
             }
         )
     }
@@ -965,6 +1137,10 @@ fun BuildScreen(
                             }
                             .filter { (_, stages) -> stages.isNotEmpty() }
                         if (vm.replaceModuleSetSelection(repoUrl, moduleSetMetadata, selections)) {
+                            if (pendingCustomModuleUrl.equals(repoUrl, ignoreCase = true)) {
+                                customModuleUrl = ""
+                                pendingCustomModuleUrl = ""
+                            }
                             clearModuleSetEditor()
                         }
                     },
@@ -1028,23 +1204,25 @@ fun BuildScreen(
 
     if (!state.isLoggedIn || state.forkRepo == null) {
         val needsLogin = !state.isLoggedIn
-        Scaffold(
+        BlurScreenScaffold(
+            blurConfig = state.blurConfig,
             containerColor = appPageBackgroundColor(uiSurfaceColor(MaterialTheme.colorScheme.surface)),
             topBar = {
                 ExpressiveTopBar(
                     title = stringResource(R.string.build_title),
-                    scrollBehavior = scrollBehavior
+                    scrollBehavior = scrollBehavior,
+                    enableBlur = state.blurEnabled
                 )
             }
-        ) { padding ->
+        ) { topBarHeight ->
             Column(
                 modifier = Modifier
-                    .padding(padding)
                     .fillMaxSize()
                     .padding(horizontal = AbkScreenHorizontalPadding)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                Spacer(Modifier.height(topBarHeight + 16.dp))
                 ExpressiveHeroCard(
                     title = stringResource(
                         if (needsLogin) {
@@ -1108,29 +1286,31 @@ fun BuildScreen(
             .fillMaxWidth()
             .height(maxHeight + childPageTopInset + childPageBottomInset)
             .offset(y = -childPageTopInset)
-        Scaffold(
+        BlurScreenScaffold(
+            blurConfig = state.blurConfig,
             containerColor = appPageBackgroundColor(uiSurfaceColor(MaterialTheme.colorScheme.surface)),
             topBar = {
                 ExpressiveTopBar(
                     title = stringResource(R.string.build_title),
-                    scrollBehavior = scrollBehavior
+                    scrollBehavior = scrollBehavior,
+                    enableBlur = state.blurEnabled
                 )
             }
-        ) { padding ->
+        ) { topBarHeight ->
             Column(
                 modifier = Modifier
-                    .padding(padding)
                     .fillMaxSize()
                     .nestedScroll(scrollBehavior.nestedScrollConnection)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = AbkScreenHorizontalPadding),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-            BuildPlanHero(
-                config,
-                recommended,
-                state.buildStatus
-            )
+                Spacer(Modifier.height(topBarHeight + 16.dp))
+                BuildPlanHero(
+                    config,
+                    recommended,
+                    state.buildStatus
+                )
 
             BuildPlanToolsCard(
                 plansCount = state.buildPlans.size,
@@ -1175,10 +1355,33 @@ fun BuildScreen(
                             onePlusUseProxyOptimization = true,
                             onePlusUseUnicodeBypass = false
                         )
+                    } else if (target == BUILD_TARGET_CUSTOM_SOURCE) {
+                        config.copy(
+                            buildTarget = BUILD_TARGET_CUSTOM_SOURCE,
+                            kernelsuVariant = KSU_VARIANT_NONE,
+                            kernelsuBranch = KSU_BRANCH_STABLE,
+                            sourceUrl = config.sourceUrl,
+                            sourceRef = config.sourceRef,
+                            sourceAccessMode = SOURCE_ACCESS_PUBLIC,
+                            sourceDefconfigs = config.sourceDefconfigs.ifEmpty { listOf("gki_defconfig") },
+                            sourceDeviceLabel = config.sourceDeviceLabel,
+                            useZram = false,
+                            useBbg = false,
+                            useDdk = false,
+                            useNtsync = false,
+                            useNetworking = false,
+                            useKpm = false,
+                            useRekernel = false,
+                            cancelSusfs = true,
+                            virtualizationSupport = "off",
+                            useCustomExternalModules = false,
+                            customExternalModules = emptyList(),
+                            customKernelOptions = emptyList()
+                        )
                     } else {
                         config.copy(
                             buildTarget = BUILD_TARGET_GKI,
-                            kernelsuVariant = KSU_VARIANT_RESUKISU
+                            kernelsuVariant = KSU_VARIANT_BAKASU
                         )
                     }
                     vm.updateBuildConfig(KernelSupport.normalize(next))
@@ -1237,7 +1440,124 @@ fun BuildScreen(
             }
 
             SectionCard(section = BuildSection.KernelVersion) {
-                if (isOnePlusBuild) {
+                if (isCustomSourceBuild) {
+                    OutlinedTextField(
+                        value = config.sourceUrl,
+                        onValueChange = { vm.updateBuildConfig(config.copy(sourceUrl = it)) },
+                        label = { Text(stringResource(R.string.build_source_repo_url)) },
+                        placeholder = { Text("https://github.com/LineageOS/android_kernel_xxx.git") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    var sourceRefFocused by remember { mutableStateOf(false) }
+                    OutlinedTextField(
+                        value = config.sourceRef,
+                        onValueChange = { vm.updateBuildConfig(config.copy(sourceRef = it)) },
+                        label = { Text(stringResource(R.string.build_source_ref)) },
+                        placeholder = { Text("lineage-23.2 或 40 位 commit SHA") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focusState ->
+                                val wasFocused = sourceRefFocused
+                                sourceRefFocused = focusState.isFocused
+                                // 失焦时自动从源码 Makefile 检测内核版本
+                                if (wasFocused && !focusState.isFocused) {
+                                    vm.detectCustomSourceVersion()
+                                }
+                            },
+                        singleLine = true
+                    )
+                    val publicSourceLabel = stringResource(R.string.build_source_public)
+                    val privateSourceLabel = stringResource(R.string.build_source_private)
+                    DropdownField(
+                        label = stringResource(R.string.build_source_access),
+                        value = config.sourceAccessMode,
+                        options = listOf(SOURCE_ACCESS_PUBLIC, SOURCE_ACCESS_GITHUB_PRIVATE),
+                        optionLabel = { mode ->
+                            if (mode == SOURCE_ACCESS_GITHUB_PRIVATE) {
+                                privateSourceLabel
+                            } else {
+                                publicSourceLabel
+                            }
+                        },
+                        onSelect = { vm.updateBuildConfig(config.copy(sourceAccessMode = it)) }
+                    )
+                    OutlinedTextField(
+                        value = config.sourceKernelVersionOverride,
+                        onValueChange = {
+                            vm.updateBuildConfig(config.copy(sourceKernelVersionOverride = it))
+                        },
+                        label = { Text(stringResource(R.string.build_source_kernel_version)) },
+                        placeholder = { Text("5.10.177") },
+                        supportingText = {
+                            when {
+                                state.customSourceDetecting ->
+                                    Text(stringResource(R.string.build_source_detecting))
+                                state.customSourceDetectError != null ->
+                                    Text(
+                                        state.customSourceDetectError!!,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                else ->
+                                    Text(stringResource(R.string.build_source_kernel_version_hint))
+                            }
+                        },
+                        trailingIcon = if (state.customSourceDetecting) {
+                            {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        } else {
+                            null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = config.osPatchLevel,
+                        onValueChange = { vm.updateBuildConfig(config.copy(osPatchLevel = it)) },
+                        label = { Text(stringResource(R.string.build_source_patch_month)) },
+                        placeholder = { Text(stringResource(R.string.build_source_patch_month_placeholder)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = config.sourceDeviceLabel,
+                        onValueChange = { vm.updateBuildConfig(config.copy(sourceDeviceLabel = it)) },
+                        label = { Text(stringResource(R.string.build_source_device_label)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    ExpressiveListItem(
+                        title = stringResource(R.string.build_source_defconfigs),
+                        subtitle = config.sourceDefconfigs.joinToString(" -> ")
+                            .ifBlank { stringResource(R.string.build_source_defconfig_base_hint) },
+                        leadingIcon = Icons.Default.Tune,
+                        trailingContent = {
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        onClick = ::openDefconfigEditorPage
+                    )
+                    if (config.sourceAccessMode == SOURCE_ACCESS_GITHUB_PRIVATE) {
+                        Text(
+                            text = stringResource(
+                                if (state.customSourceSecretConfigured) {
+                                    R.string.build_source_secret_exists
+                                } else {
+                                    R.string.build_source_secret_missing
+                                }
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                } else if (isOnePlusBuild) {
                     DropdownField(
                         label = stringResource(R.string.build_oneplus_device_manifest),
                         value = config.onePlusDeviceManifest,
@@ -1356,6 +1676,7 @@ fun BuildScreen(
 
             SectionCard(section = BuildSection.KernelSu) {
                 val noRootScheme = config.kernelsuVariant == KSU_VARIANT_NONE
+                val deprecatedVariantAlias = KernelSupport.isDeprecatedKsuVariantAlias(rawConfig.kernelsuVariant)
                 DropdownField(
                     label = stringResource(R.string.build_kernelsu_variant),
                     value = config.kernelsuVariant,
@@ -1364,6 +1685,13 @@ fun BuildScreen(
                         vm.updateBuildConfig(KernelSupport.normalize(config.copy(kernelsuVariant = it)))
                     }
                 )
+                if (deprecatedVariantAlias) {
+                    Text(
+                        text = stringResource(R.string.build_ksu_variant_deprecated),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
                 if (noRootScheme) {
                     Text(
                         text = if (isOnePlusBuild) {
@@ -1421,11 +1749,12 @@ fun BuildScreen(
                 if (isOnePlusBuild) {
                     val proxyAllowed = !config.onePlusCpu.startsWith("mt")
                     val onePlusSusfsSupported = KernelSupport.onePlusSusfsSupported(config.androidVersion, config.kernelVersion)
+                    val susfsSelectable = KernelSupport.isSusfsSelectable(config.kernelsuVariant)
                     val onePlusLz4kdSupported = KernelSupport.onePlusLz4kdSupported(config.kernelVersion)
                     SwitchRow(
                         stringResource(R.string.build_enable_susfs),
                         !config.cancelSusfs && onePlusSusfsSupported,
-                        enabled = !noRootScheme && onePlusSusfsSupported
+                        enabled = !noRootScheme && onePlusSusfsSupported && susfsSelectable
                     ) {
                         vm.updateBuildConfig(KernelSupport.normalize(config.copy(cancelSusfs = !it)))
                     }
@@ -1477,13 +1806,20 @@ fun BuildScreen(
                         vm.updateBuildConfig(config.copy(onePlusUseUnicodeBypass = it))
                     }
                 } else {
-                    SwitchRow(stringResource(R.string.build_enable_susfs), !config.cancelSusfs, enabled = !noRootScheme) {
+                    val susfsSelectable = KernelSupport.isSusfsSelectable(config.kernelsuVariant)
+                    val bbgSupported = KernelSupport.bbgSupported(config.androidVersion, config.kernelVersion)
+                    val suppOpSupported = KernelSupport.suppOpSupported(config.androidVersion, config.kernelVersion)
+                    SwitchRow(
+                        stringResource(R.string.build_enable_susfs),
+                        !config.cancelSusfs,
+                        enabled = !noRootScheme && susfsSelectable
+                    ) {
                         vm.updateBuildConfig(KernelSupport.normalize(config.copy(cancelSusfs = !it)))
                     }
                     SwitchRow(stringResource(R.string.build_enable_zram), config.useZram) {
                         vm.updateBuildConfig(config.copy(useZram = it))
                     }
-                    SwitchRow(stringResource(R.string.build_enable_bbg), config.useBbg) {
+                    SwitchRow(stringResource(R.string.build_enable_bbg), config.useBbg && bbgSupported, enabled = bbgSupported) {
                         vm.updateBuildConfig(config.copy(useBbg = it))
                     }
                     SwitchRow(stringResource(R.string.build_enable_ddk), config.useDdk) {
@@ -1507,7 +1843,7 @@ fun BuildScreen(
                         options = virtualizationSupportOptions,
                         onSelect = { vm.updateBuildConfig(config.copy(virtualizationSupport = it)) }
                     )
-                    SwitchRow(stringResource(R.string.build_enable_oneplus_8e), config.suppOp) {
+                    SwitchRow(stringResource(R.string.build_enable_oneplus_8e), config.suppOp && suppOpSupported, enabled = suppOpSupported) {
                         vm.updateBuildConfig(config.copy(suppOp = it))
                     }
                 }
@@ -1718,11 +2054,34 @@ fun BuildScreen(
                                 if (cleanUrl.isNotEmpty()) {
                                     coroutineScope.launch {
                                         vm.checkCustomExternalModuleMetadata(cleanUrl)?.let { metadata ->
-                                            pendingCustomModuleUrl = cleanUrl
-                                            pendingCustomModuleMetadata = metadata
-                                            selectedCustomModuleStages = metadata.recommendedStages
-                                                .filter { it in metadata.supportedStages }
-                                                .ifEmpty { listOf(metadata.defaultStage) }
+                                            if (metadata.kind == ModuleCatalogItemKind.MODULE_SET) {
+                                                val group = BuildCustomModuleGroup(
+                                                    url = cleanUrl,
+                                                    stages = emptyList(),
+                                                    catalogModule = null,
+                                                    entryKind = CustomExternalModuleEntryKind.MODULE_SET_CHILD,
+                                                    groupRepoUrl = cleanUrl,
+                                                    groupName = metadata.name
+                                                )
+                                                val currentGroupModules = config.customExternalModules.filter {
+                                                    CustomExternalModuleEntryKind.normalize(it.entryKind) ==
+                                                        CustomExternalModuleEntryKind.MODULE_SET_CHILD &&
+                                                        (
+                                                            it.groupRepoUrl.equals(cleanUrl, ignoreCase = true) ||
+                                                                (it.groupRepoUrl.isBlank() && it.url.equals(cleanUrl, ignoreCase = true))
+                                                            )
+                                                }
+                                                pendingCustomModuleUrl = cleanUrl
+                                                pendingCustomModuleMetadata = null
+                                                selectedCustomModuleStages = emptyList()
+                                                configureModuleSetEditor(group, metadata, currentGroupModules)
+                                            } else {
+                                                pendingCustomModuleUrl = cleanUrl
+                                                pendingCustomModuleMetadata = metadata
+                                                selectedCustomModuleStages = metadata.recommendedStages
+                                                    .filter { it in metadata.supportedStages }
+                                                    .ifEmpty { listOf(metadata.defaultStage) }
+                                            }
                                         }
                                     }
                                 }
@@ -1749,9 +2108,12 @@ fun BuildScreen(
                         }
 
                         state.customExternalModuleError?.let { err ->
+                            val shape = MaterialTheme.shapes.medium
                             Card(
+                                modifier = Modifier.blurredCardBackground(shape),
+                                shape = shape,
                                 colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                    containerColor = blurredCardSurfaceColor(MaterialTheme.colorScheme.errorContainer)
                                 )
                             ) {
                                 Row(
@@ -1808,8 +2170,15 @@ fun BuildScreen(
 
             // Submit button
             Button(
-                onClick = { showConfirmDialog = true },
-                enabled = true,
+                onClick = {
+                    val validationError = KernelSupport.validateCustomSource(config)
+                    if (validationError != null) {
+                        Toast.makeText(context, validationError, Toast.LENGTH_LONG).show()
+                    } else {
+                        showConfirmDialog = true
+                    }
+                },
+                enabled = !state.customSourceSecretOperationInFlight,
                 modifier = Modifier.fillMaxWidth().height(52.dp)
             ) {
                 Icon(Icons.Default.RocketLaunch, null)
@@ -1855,13 +2224,15 @@ fun BuildScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
                             title = when {
                                 showBuildQueuePage -> stringResource(R.string.build_queue_title)
                                 showKernelOptionsPage -> stringResource(R.string.build_kernel_options_title)
+                                showDefconfigEditorPage -> stringResource(R.string.build_source_defconfigs)
                                 else -> stringResource(R.string.build_plan_library)
                             },
                             navigationIcon = {
@@ -1869,6 +2240,7 @@ fun BuildScreen(
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.build_back_to_config))
                                 }
                             },
+                            enableBlur = state.blurEnabled,
                             actions = {
                                 if (showKernelOptionsPage) {
                                     Box {
@@ -1920,9 +2292,10 @@ fun BuildScreen(
                             }
                         )
                     }
-                ) { padding ->
+                ) { topBarHeight ->
                     if (showBuildQueuePage) {
                         BuildQueuePage(
+                            topBarHeight = topBarHeight,
                             queue = state.buildQueue,
                             cancellingRunIds = state.cancellingWorkflowRunIds,
                             onApply = {
@@ -1934,13 +2307,11 @@ fun BuildScreen(
                             onRetry = { vm.retryBuildQueueItem(it.id) },
                             onCancelRun = { runId -> vm.cancelWorkflowRun(runId) },
                             onClearCompleted = vm::clearCompletedBuildQueueItems,
-                            modifier = Modifier
-                                .padding(padding)
-                                .fillMaxSize()
+                            modifier = Modifier.fillMaxSize()
                         )
                     } else if (showKernelOptionsPage) {
                         BuildKernelOptionsPage(
-                            padding = padding,
+                            topBarHeight = topBarHeight,
                             options = filteredKernelOptions,
                             summary = kernelOptionSummary,
                             searchQuery = kernelOptionSearchQuery,
@@ -1953,8 +2324,17 @@ fun BuildScreen(
                             onDeleteOption = vm::removeCustomKernelOption,
                             bottomPadding = outerPadding.calculateBottomPadding()
                         )
+                    } else if (showDefconfigEditorPage) {
+                        BuildDefconfigEditorPage(
+                            topBarHeight = topBarHeight,
+                            values = config.sourceDefconfigs,
+                            onValuesChange = { vm.updateBuildConfig(config.copy(sourceDefconfigs = it)) },
+                            bottomPadding = outerPadding.calculateBottomPadding(),
+                            modifier = Modifier.fillMaxSize()
+                        )
                     } else {
                         BuildPlanLibraryPage(
+                            topBarHeight = topBarHeight,
                             plans = state.buildPlans,
                             onApply = {
                                 vm.applyBuildPlan(it)
@@ -1967,9 +2347,7 @@ fun BuildScreen(
                                 renamePlanName = it.name
                             },
                             onDelete = { deletePlanTarget = it },
-                            modifier = Modifier
-                                .padding(padding)
-                                .fillMaxSize()
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                 }
@@ -2257,6 +2635,7 @@ private fun ShareBuildPlanScopeDialog(
 
 @Composable
 private fun BuildPlanLibraryPage(
+    topBarHeight: Dp,
     plans: List<BuildPlan>,
     onApply: (BuildPlan) -> Unit,
     onShare: (BuildPlan) -> Unit,
@@ -2270,6 +2649,7 @@ private fun BuildPlanLibraryPage(
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         if (plans.isEmpty()) {
             ExpressiveSectionCard(
                 title = stringResource(R.string.build_no_plans),
@@ -2352,6 +2732,7 @@ private fun BuildPlanLibraryItem(
 
 @Composable
 private fun BuildQueuePage(
+    topBarHeight: Dp,
     queue: List<BuildQueueItem>,
     cancellingRunIds: Set<Long>,
     onApply: (BuildQueueItem) -> Unit,
@@ -2368,6 +2749,7 @@ private fun BuildQueuePage(
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         ExpressiveSectionCard(
             title = stringResource(R.string.build_queue_status),
             subtitle = if (queue.isEmpty()) {
@@ -2699,7 +3081,7 @@ private fun formatCustomKernelImportSummary(context: Context, result: CustomKern
 
 @Composable
 private fun BuildKernelOptionsPage(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     options: List<IndexedValue<CustomKernelOption>>,
     summary: CustomKernelOptionSummary,
     searchQuery: String,
@@ -2710,11 +3092,10 @@ private fun BuildKernelOptionsPage(
 ) {
     LazyColumn(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)
+        contentPadding = PaddingValues(top = topBarHeight + 16.dp, bottom = bottomPadding + 24.dp)
     ) {
         item(key = "search") {
             BuildKernelOptionSearchField(
@@ -3014,6 +3395,10 @@ private fun BuildTargetSelector(
             label = buildTargetLabel(BUILD_TARGET_GKI)
         ),
         AbkSegmentedButtonOption(
+            value = BUILD_TARGET_CUSTOM_SOURCE,
+            label = buildTargetLabel(BUILD_TARGET_CUSTOM_SOURCE)
+        ),
+        AbkSegmentedButtonOption(
             value = BUILD_TARGET_ONEPLUS,
             label = buildTargetLabel(BUILD_TARGET_ONEPLUS)
         )
@@ -3033,7 +3418,112 @@ private fun BuildTargetSelector(
 }
 
 @Composable
+private fun BuildDefconfigEditorPage(
+    topBarHeight: Dp,
+    values: List<String>,
+    onValuesChange: (List<String>) -> Unit,
+    bottomPadding: Dp,
+    modifier: Modifier = Modifier
+) {
+    var draft by remember { mutableStateOf("") }
+    LazyColumn(
+        modifier = modifier.padding(horizontal = AbkScreenHorizontalPadding),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(top = topBarHeight + 16.dp, bottom = bottomPadding + 24.dp)
+    ) {
+        item(key = "hint") {
+            Text(
+                text = stringResource(R.string.build_source_defconfig_base_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (values.isEmpty()) {
+            item(key = "empty") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = stringResource(R.string.build_source_defconfig_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            itemsIndexed(
+                items = values,
+                key = { index, value -> "$index:$value" }
+            ) { index, value ->
+                ExpressiveListItem(
+                    title = "${index + 1}. $value",
+                    subtitle = stringResource(R.string.build_source_defconfig_base_hint),
+                    leadingIcon = Icons.Default.Tune,
+                    trailingContent = {
+                        Row {
+                            IconButton(
+                                onClick = {
+                                    if (index > 0) {
+                                        val next = values.toMutableList()
+                                        next[index] = next[index - 1].also { next[index - 1] = next[index] }
+                                        onValuesChange(next)
+                                    }
+                                },
+                                enabled = index > 0
+                            ) { Icon(Icons.Default.KeyboardArrowUp, contentDescription = stringResource(R.string.build_source_move_up)) }
+                            IconButton(
+                                onClick = {
+                                    if (index < values.lastIndex) {
+                                        val next = values.toMutableList()
+                                        next[index] = next[index + 1].also { next[index + 1] = next[index] }
+                                        onValuesChange(next)
+                                    }
+                                },
+                                enabled = index < values.lastIndex
+                            ) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = stringResource(R.string.build_source_move_down)) }
+                            IconButton(
+                                onClick = { onValuesChange(values.filterIndexed { itemIndex, _ -> itemIndex != index }) },
+                                enabled = values.size > 1
+                            ) { Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete)) }
+                        }
+                    }
+                )
+            }
+        }
+        item(key = "add") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    label = { Text(stringResource(R.string.build_source_add_defconfig)) },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                IconButton(
+                    onClick = {
+                        val item = draft.trim()
+                        if (item.isNotBlank()) {
+                            onValuesChange(values + item)
+                            draft = ""
+                        }
+                    },
+                    enabled = draft.isNotBlank()
+                ) { Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add)) }
+            }
+        }
+    }
+}
+
+@Composable
 private fun buildTargetLabel(target: String): String = when (target) {
+    BUILD_TARGET_CUSTOM_SOURCE -> stringResource(R.string.build_target_custom_source)
     BUILD_TARGET_ONEPLUS -> stringResource(R.string.build_target_oneplus)
     else -> stringResource(R.string.build_target_gki)
 }
@@ -3045,6 +3535,13 @@ private fun copyTextToClipboard(context: Context, label: String, text: String) {
 
 @Composable
 private fun buildPlanSummary(config: KernelBuildConfig): String {
+    if (config.buildTarget == BUILD_TARGET_CUSTOM_SOURCE) {
+        val sourceName = config.sourceUrl.substringAfterLast('/').removeSuffix(".git").ifBlank {
+            stringResource(R.string.build_target_custom_source)
+        }
+        return "${buildTargetLabel(config.buildTarget)} · $sourceName · ${config.sourceRef}\n" +
+            "${config.osPatchLevel} · ${config.sourceDefconfigs.joinToString(" -> ")} · ${ksuVariantDisplayName(config.kernelsuVariant)}"
+    }
     if (config.buildTarget == BUILD_TARGET_ONEPLUS) {
         val enabled = mutableListOf<String>()
         if (!config.cancelSusfs) enabled += "SUSFS"
@@ -3096,6 +3593,37 @@ private fun BuildPlanHero(
     recommended: KernelBuildConfig?,
     status: BuildStatus
 ) {
+    if (config.buildTarget == BUILD_TARGET_CUSTOM_SOURCE) {
+        ExpressiveHeroCard(
+            title = config.sourceDeviceLabel.ifBlank {
+                config.sourceUrl.substringAfterLast('/').removeSuffix(".git").ifBlank {
+                    stringResource(R.string.build_target_custom_source)
+                }
+            },
+            subtitle = stringResource(R.string.build_source_hero_desc),
+            icon = Icons.Default.Source,
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+            badge = {
+                ExpressiveStatusChip(
+                    label = config.sourceRef.ifBlank { stringResource(R.string.build_source_ref) },
+                    icon = Icons.Default.Commit,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+                ExpressiveStatusChip(
+                    label = config.osPatchLevel,
+                    icon = Icons.Default.CalendarMonth,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                ExpressiveStatusChip(
+                    label = buildStatusLabel(status),
+                    icon = Icons.Default.RunCircle,
+                    color = buildStatusColor(status)
+                )
+            }
+        )
+        return
+    }
     if (config.buildTarget == BUILD_TARGET_ONEPLUS) {
         ExpressiveHeroCard(
             title = KernelSupport.onePlusDeviceLabel(config.onePlusDeviceManifest),
@@ -3295,10 +3823,14 @@ private fun BuildStatusBanner(
         BuildStatus.CANCELLED -> Triple(Icons.Default.Cancel, stringResource(R.string.build_cancelled), MaterialTheme.colorScheme.outline)
         else -> return
     }
+    val shape = MaterialTheme.shapes.medium
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .blurredCardBackground(shape),
+        shape = shape,
         colors = CardDefaults.cardColors(
-            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+            containerColor = blurredCardSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
         )
     ) {
         Row(
@@ -3363,10 +3895,15 @@ private fun BuildProgressCard(
         animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
         label = "build-progress"
     )
+    val shape = MaterialTheme.shapes.medium
     Card(
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .blurredCardBackground(shape),
+        shape = shape,
         colors = CardDefaults.cardColors(
-            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+            containerColor = blurredCardSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
         )
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

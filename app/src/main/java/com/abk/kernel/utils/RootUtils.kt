@@ -21,6 +21,7 @@ import com.topjohnwu.superuser.CallbackList
 import com.topjohnwu.superuser.Shell
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.Collections
 import java.util.Properties
 import java.security.MessageDigest
@@ -441,6 +442,7 @@ object RootUtils {
             "6.1" -> "android14"
             "6.6" -> "android15"
             "6.12" -> "android16"
+            "6.18" -> "android17"
             else -> return null
         }
         return "$android-$kernel"
@@ -476,7 +478,8 @@ object RootUtils {
         allowShell: Boolean = false,
         enableAdb: Boolean = false,
         localModulePath: String? = null,
-        onOutput: ((String) -> Unit)? = null
+        onOutput: ((String) -> Unit)? = null,
+        downloadDirectory: String? = null
     ): BootPatchResult {
         val sourceBoot = bootImagePath
             ?.takeIf { it.isNotBlank() }
@@ -511,10 +514,19 @@ object RootUtils {
                 stageBundledAbkLkmAsset(context, workDir, checkNotNull(asset))
             }
 
-            val outputDir = File(
-                context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
-                "abk-patched"
-            ).apply { mkdirs() }
+            val appScopedOutputCandidates = listOfNotNull(
+                context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                    ?.let { File(it, "abk-patched") },
+                File(context.filesDir, "abk-patched")
+            )
+            val outputDir = (if (flash) null else resolvePatchOutputDir(downloadDirectory))
+                ?: appScopedOutputCandidates.firstNotNullOfOrNull(::prepareWritableDirectory)
+                ?: throw IOException(
+                    tr(R.string.download_directory_create_failed, context.filesDir.absolutePath)
+                )
+            if (!flash) {
+                onOutput?.invoke(tr(R.string.ru_log_output_dir, outputDir.absolutePath))
+            }
             val moduleName = (asset?.let { "${it.variantId}-${it.kmi}" } ?: moduleFile.nameWithoutExtension)
                 .replace(Regex("""[^A-Za-z0-9._-]"""), "_")
             val outputName = "abk-${moduleName}-patched-${System.currentTimeMillis()}.img"
@@ -843,6 +855,21 @@ object RootUtils {
         flags = ROOT_PROFILE_FLAG_NO_NEW_PRIVS
     )
 
+    // Read-only kernel status helpers (safe wrappers over the native bridge;
+    // return null/false if the driver is unavailable so callers never crash).
+    fun kernelHookType(): String? = runCatching {
+        AbkKsuNative.getHookType().takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    fun isKernelSafeMode(): Boolean = runCatching { AbkKsuNative.isSafeMode() }.getOrDefault(false)
+
+    fun isKernelLkmMode(): Boolean = runCatching { AbkKsuNative.isLkmMode() }.getOrDefault(false)
+
+    fun isKernelLateLoadMode(): Boolean =
+        runCatching { AbkKsuNative.isLateLoadMode() }.getOrDefault(false)
+
+    fun superuserCount(): Int? = runCatching { AbkKsuNative.getSuperuserCount() }.getOrNull()
+
     fun readKsuFeature(featureName: String): KsuFeatureState {
         val feature = normalizeKsuFeatureName(featureName)
             ?: return KsuFeatureState(featureName, KsuFeatureSupport.UNSUPPORTED)
@@ -899,7 +926,7 @@ object RootUtils {
         }
     }
 
-    fun setReSukiSuFeatureEnabled(featureName: String, enabled: Boolean): ShellResult =
+    fun setBakaSuFeatureEnabled(featureName: String, enabled: Boolean): ShellResult =
         setKsuFeatureEnabled(featureName, enabled)
 
     fun isDefaultUmountModules(): Boolean {
@@ -1634,7 +1661,7 @@ object RootUtils {
     val ABK_LKM_VARIANTS = listOf(
         AbkLkmVariant("kernelsu", "KernelSU"),
         AbkLkmVariant("sukisu", "SukiSU"),
-        AbkLkmVariant("resukisu", "ReSukiSU")
+        AbkLkmVariant("bakasu", "BakaSU")
     )
 
     enum class KsuFeatureSupport {
@@ -2266,6 +2293,18 @@ object RootUtils {
         return target
     }
 
+    internal fun resolvePatchOutputDir(downloadDirectory: String?): File? {
+        val root = prepareWritableDirectory(
+            File(DownloadDirectoryUtils.normalizeDirectoryPath(downloadDirectory))
+        ) ?: return null
+        return prepareWritableDirectory(File(root, "abk-patched"))
+    }
+
+    private fun prepareWritableDirectory(directory: File): File? {
+        if (!directory.exists() && !directory.mkdirs()) return null
+        return directory.takeIf { it.isDirectory && it.canWrite() }
+    }
+
     private fun buildBootPatchArgs(
         context: Context,
         bootImage: File?,
@@ -2585,7 +2624,7 @@ object RootUtils {
     private fun inferManagerVariant(version: String): String {
         val lower = version.lowercase()
         return when {
-            "resukisu" in lower -> "ReSukiSU"
+            "bakasu" in lower -> "BakaSU"
             "sukisu" in lower -> "SukiSU"
             "kernelsu" in lower || version.isNotBlank() -> "KernelSU"
             else -> ""

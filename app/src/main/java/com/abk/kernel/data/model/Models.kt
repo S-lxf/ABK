@@ -587,9 +587,19 @@ const val KSU_BRANCH_CUSTOM = "Custom(自定义)"
 const val KSU_VARIANT_NONE = "None"
 const val KSU_VARIANT_OFFICIAL = "Official"
 const val KSU_VARIANT_SUKISU = "SukiSU"
-const val KSU_VARIANT_RESUKISU = "ReSukiSU"
+const val KSU_VARIANT_BAKASU = "BakaSU"
 const val BUILD_TARGET_GKI = "gki"
+const val BUILD_TARGET_CUSTOM_SOURCE = "custom_source"
 const val BUILD_TARGET_ONEPLUS = "oneplus"
+const val SOURCE_ACCESS_PUBLIC = "public"
+const val SOURCE_ACCESS_GITHUB_PRIVATE = "github_private"
+
+/**
+ * Lowercase spellings of the retired `ReSukiSU` variant that still arrive from older app
+ * builds and already-persisted build records. [KernelSupport.normalizeKsuVariant] folds every
+ * match into [KSU_VARIANT_BAKASU]; nothing else may treat them as a distinct variant.
+ */
+val KSU_VARIANT_LEGACY_ALIASES = listOf("resukisu", "re-suki")
 
 val KSU_BRANCH_STANDARD_OPTIONS = listOf(
     KSU_BRANCH_STABLE,
@@ -601,25 +611,32 @@ val KSU_BRANCH_BUILD_PLAN_OPTIONS = KSU_BRANCH_STANDARD_OPTIONS
 val KSU_VARIANT_OPTIONS = listOf(
     KSU_VARIANT_OFFICIAL,
     KSU_VARIANT_SUKISU,
-    KSU_VARIANT_RESUKISU,
+    KSU_VARIANT_BAKASU,
     KSU_VARIANT_NONE
 )
 val ONEPLUS_KSU_VARIANT_OPTIONS = listOf(
     KSU_VARIANT_OFFICIAL,
     KSU_VARIANT_SUKISU,
-    KSU_VARIANT_RESUKISU,
+    KSU_VARIANT_BAKASU,
     KSU_VARIANT_NONE
 )
 
 // App-level build config model (mirrors kernel-custom.yml inputs)
 data class KernelBuildConfig(
     val buildTarget: String = BUILD_TARGET_GKI,
+    val sourceUrl: String = "",
+    val sourceRef: String = "",
+    val sourceAccessMode: String = SOURCE_ACCESS_PUBLIC,
+    val sourceDefconfigs: List<String> = listOf("gki_defconfig"),
+    val sourceDeviceLabel: String = "",
+    // LOS 构建内核版本覆盖（空=服务端从 Makefile 自动检测）；填 X.Y 或 X.Y.Z 覆盖编译 profile
+    val sourceKernelVersionOverride: String = "",
     val androidVersion: String = "android12",
     val kernelVersion: String = "5.10",
     val subLevel: String = "66",
     val osPatchLevel: String = "2022-01",
     val revision: String = "r11",
-    val kernelsuVariant: String = KSU_VARIANT_RESUKISU,
+    val kernelsuVariant: String = KSU_VARIANT_BAKASU,
     val kernelsuBranch: String = KSU_BRANCH_STABLE,
     val customRef: String = "",
     val version: String = "",
@@ -860,6 +877,10 @@ data class DownloadedArtifact(
     val sourceAssetName: String? = null,
     val verified: Boolean = false,
     val verificationSummary: String? = null,
+    val manifestPayloadKind: String? = null,
+    val manifestKernelSource: String? = null,
+    val manifestFeatureStatus: String? = null,
+    val manifestClientNotice: String? = null,
     val category: ArtifactCategory = type.toArtifactCategory()
 )
 
@@ -906,16 +927,11 @@ fun WorkflowRun.isFailedFlashRun(): Boolean =
  */
 fun WorkflowRun.isKernelBuild(): Boolean {
     val workflowName = name.orEmpty().lowercase()
-    val lower = "${name.orEmpty()} ${displayTitle.orEmpty()}".lowercase()
-    if (lower.hasUtilityWorkflowSignal()) return false
+    if (workflowName.hasUtilityWorkflowSignal()) return false
     // The workflow name is more reliable than displayTitle, which can contain
     // user/commit text from a different build type.
     if (workflowName.hasManagerBuildSignal()) return false
     if (workflowName.hasKernelBuildSignal()) return true
-    // Negative signals: app / manager / certificate / utility workflows.
-    if (lower.hasManagerBuildSignal()) return false
-    // Positive signals: kernel build.
-    if (lower.hasKernelBuildSignal()) return true
     // Unknown — be conservative and exclude it from the kernel-only tile.
     return false
 }
@@ -928,15 +944,12 @@ fun WorkflowRun.isKernelBuild(): Boolean {
  */
 fun WorkflowRun.isManagerBuild(): Boolean {
     val workflowName = name.orEmpty().lowercase()
-    val lower = "${name.orEmpty()} ${displayTitle.orEmpty()}".lowercase()
-    if (lower.hasUtilityWorkflowSignal()) return false
+    if (workflowName.hasUtilityWorkflowSignal()) return false
     // The GitHub run display title can contain kernel parameters from the
     // triggering commit/title. The workflow name is the primary classifier.
     if (workflowName.hasManagerBuildSignal()) return true
     if (workflowName.hasKernelBuildSignal()) return false
-    // Kernel workflows often bundle a manager APK but are not manager-primary.
-    if (lower.hasKernelBuildSignal()) return false
-    return lower.hasManagerBuildSignal()
+    return false
 }
 
 /** Manager-primary workflow (Build ABK App / Dev), not a kernel build that bundles a manager APK. */
